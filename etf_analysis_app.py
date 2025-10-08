@@ -690,7 +690,7 @@ with tab2:
                         'Returns_%': '{:.2f}',
                         'Portfolio_Value': '${:,.2f}'
                     }),
-                    width=True
+                    use_container_width=True
                 )
 
                 csv = results.to_csv(index=False).encode('utf-8')
