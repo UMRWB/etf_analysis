@@ -113,6 +113,28 @@ def calculate_monthly_stats_for_etfs(etf_dict, etf_list):
 
     return pd.DataFrame(prob_results).T, pd.DataFrame(avg_return_results).T
 
+def style_dataframe_prob(df):
+    """Apply consistent styling to probability dataframes"""
+    return df.style.background_gradient(
+        cmap='RdYlGn',
+        vmin=0,
+        vmax=100,
+        axis=None
+    ).format("{:.2f}")
+
+def style_dataframe_returns(df):
+    """Apply consistent styling to returns dataframes"""
+    # Find global min and max for consistent coloring
+    vmin = df.min().min()
+    vmax = df.max().max()
+
+    return df.style.background_gradient(
+        cmap='RdYlGn',
+        vmin=vmin,
+        vmax=vmax,
+        axis=None
+    ).format("{:.2f}")
+
 def get_recommendations(prob_df, avg_df, month_name, top_n=5, weight_prob=0.5, weight_return=0.5):
     """
     Get ETF recommendations for a specific month based on probability and returns
@@ -392,14 +414,15 @@ with tab3:
 with tab4:
     st.header("Monthly Probability of Positive Returns")
 
-    st.dataframe(all_prob.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+    st.subheader("All ETFs - Full Year")
+    st.dataframe(style_dataframe_prob(all_prob), use_container_width=True)
 
     # Highlight current and next month
     st.subheader(f"Focus: {current_month} & {next_month}")
 
     focus_months = [current_month, next_month]
-    focus_prob = all_prob[focus_months].round(2)
-    st.dataframe(focus_prob.style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+    focus_prob = all_prob[focus_months]
+    st.dataframe(style_dataframe_prob(focus_prob), use_container_width=True)
 
     csv = all_prob.to_csv().encode('utf-8')
     st.download_button(
@@ -412,14 +435,15 @@ with tab4:
 with tab5:
     st.header("Average Monthly Returns")
 
-    st.dataframe(all_avg.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+    st.subheader("All ETFs - Full Year")
+    st.dataframe(style_dataframe_returns(all_avg), use_container_width=True)
 
     # Highlight current and next month
     st.subheader(f"Focus: {current_month} & {next_month}")
 
     focus_months = [current_month, next_month]
-    focus_avg = all_avg[focus_months].round(2)
-    st.dataframe(focus_avg.style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+    focus_avg = all_avg[focus_months]
+    st.dataframe(style_dataframe_returns(focus_avg), use_container_width=True)
 
     csv = all_avg.to_csv().encode('utf-8')
     st.download_button(
