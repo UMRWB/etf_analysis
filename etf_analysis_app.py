@@ -753,13 +753,13 @@ with tab5:
     st.header("Monthly Probability of Positive Returns")
 
     st.subheader("All ETFs - Full Year")
-    st.dataframe(style_dataframe_prob(all_prob), width=True)
+    st.dataframe(style_dataframe_prob(all_prob), use_container_width=True)
 
     st.subheader(f"Focus: {current_month} & {next_month}")
 
     focus_months = [current_month, next_month]
     focus_prob = all_prob[focus_months]
-    st.dataframe(style_dataframe_prob(focus_prob), width=True)
+    st.dataframe(style_dataframe_prob(focus_prob), use_container_width=True)
 
     csv = all_prob.to_csv().encode('utf-8')
     st.download_button(
@@ -774,13 +774,13 @@ with tab6:
     st.header("Average Monthly Returns")
 
     st.subheader("All ETFs - Full Year")
-    st.dataframe(style_dataframe_returns(all_avg), width=True)
+    st.dataframe(style_dataframe_returns(all_avg), use_container_width=True)
 
     st.subheader(f"Focus: {current_month} & {next_month}")
 
     focus_months = [current_month, next_month]
     focus_avg = all_avg[focus_months]
-    st.dataframe(style_dataframe_returns(focus_avg), width=True)
+    st.dataframe(style_dataframe_returns(focus_avg), use_container_width=True)
 
     csv = all_avg.to_csv().encode('utf-8')
     st.download_button(
@@ -815,7 +815,7 @@ with tab7:
 
         with col2:
             st.subheader("Rankings")
-            st.dataframe(sharpe_df.round(3), width=True)
+            st.dataframe(sharpe_df.round(3), use_container_width=True)
 
             csv = sharpe_df.to_csv().encode('utf-8')
             st.download_button(
