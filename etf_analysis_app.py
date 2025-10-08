@@ -661,7 +661,7 @@ with tab2:
                     height=500
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width=True)
 
                 st.subheader("📊 Monthly Returns Distribution")
 
@@ -682,7 +682,7 @@ with tab2:
                     height=400
                 )
 
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width=True)
 
                 st.subheader("📋 Detailed Results")
                 st.dataframe(
@@ -690,7 +690,7 @@ with tab2:
                         'Returns_%': '{:.2f}',
                         'Portfolio_Value': '${:,.2f}'
                     }),
-                    use_container_width=True
+                    width=True
                 )
 
                 csv = results.to_csv(index=False).encode('utf-8')
@@ -736,30 +736,30 @@ with tab4:
     if broad_cores_dict:
         st.subheader("Broad Core ETFs")
         fig = plot_cumulative_return(broad_cores_dict, "Cumulative Return - Broad Core ETFs")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width=True)
 
     if sectors_dict:
         st.subheader("Sector ETFs")
         fig = plot_cumulative_return(sectors_dict, "Cumulative Return - Sector ETFs")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width=True)
 
     if commodities_dict:
         st.subheader("Commodity ETFs")
         fig = plot_cumulative_return(commodities_dict, "Cumulative Return - Commodity ETFs")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width=True)
 
 # TAB 5: MONTHLY PROBABILITY
 with tab5:
     st.header("Monthly Probability of Positive Returns")
 
     st.subheader("All ETFs - Full Year")
-    st.dataframe(style_dataframe_prob(all_prob), use_container_width=True)
+    st.dataframe(style_dataframe_prob(all_prob), width=True)
 
     st.subheader(f"Focus: {current_month} & {next_month}")
 
     focus_months = [current_month, next_month]
     focus_prob = all_prob[focus_months]
-    st.dataframe(style_dataframe_prob(focus_prob), use_container_width=True)
+    st.dataframe(style_dataframe_prob(focus_prob), width=True)
 
     csv = all_prob.to_csv().encode('utf-8')
     st.download_button(
@@ -774,13 +774,13 @@ with tab6:
     st.header("Average Monthly Returns")
 
     st.subheader("All ETFs - Full Year")
-    st.dataframe(style_dataframe_returns(all_avg), use_container_width=True)
+    st.dataframe(style_dataframe_returns(all_avg), width=True)
 
     st.subheader(f"Focus: {current_month} & {next_month}")
 
     focus_months = [current_month, next_month]
     focus_avg = all_avg[focus_months]
-    st.dataframe(style_dataframe_returns(focus_avg), use_container_width=True)
+    st.dataframe(style_dataframe_returns(focus_avg), width=True)
 
     csv = all_avg.to_csv().encode('utf-8')
     st.download_button(
@@ -811,11 +811,11 @@ with tab7:
                 yaxis_title="Sharpe Ratio",
                 height=500
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width=True)
 
         with col2:
             st.subheader("Rankings")
-            st.dataframe(sharpe_df.round(3), use_container_width=True)
+            st.dataframe(sharpe_df.round(3), width=True)
 
             csv = sharpe_df.to_csv().encode('utf-8')
             st.download_button(
