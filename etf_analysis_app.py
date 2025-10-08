@@ -4,18 +4,19 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from ta import others
-import time
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 # Page configuration
 st.set_page_config(
-    page_title="ETF Monthly Return Analysis",
+    page_title="ETF Monthly Return Analysis & Recommender",
     page_icon="📈",
     layout="wide"
 )
 
 # Title
-st.title("📈 ETF Monthly Return Analysis Dashboard")
-st.markdown("Analyze monthly return patterns, probabilities, and performance metrics across ETFs")
+st.title("📈 ETF Monthly Return Analysis & Investment Recommender")
+st.markdown("Analyze monthly return patterns and get ETF recommendations based on historical performance")
 
 # Sidebar configuration
 st.sidebar.header("Configuration")
@@ -35,6 +36,13 @@ asset_classes = st.sidebar.multiselect(
     default=["Broad Core ETFs", "Sector ETFs", "Commodity ETFs"]
 )
 
+# Recommender settings
+st.sidebar.header("Recommender Settings")
+top_n = st.sidebar.slider("Number of recommendations", 3, 10, 5)
+weight_prob = st.sidebar.slider("Probability weight", 0.0, 1.0, 0.5, 0.1)
+weight_return = 1.0 - weight_prob
+st.sidebar.caption(f"Return weight: {weight_return:.1f}")
+
 # Cache data loading
 @st.cache_data(ttl=3600)
 def load_etf_data(tickers, period, interval):
@@ -51,10 +59,8 @@ def load_etf_data(tickers, period, interval):
                 df["pct_change"] = df["Close"].pct_change() * 100
                 df["cumulative_return"] = others.cumulative_return(df["Close"])
                 data_dict[ticker] = df
-            else:
-                st.warning(f"No data available for {ticker}")
         except Exception as e:
-            st.error(f"Error loading {ticker}: {str(e)}")
+            st.warning(f"Error loading {ticker}: {str(e)}")
 
         progress_bar.progress((idx + 1) / len(tickers))
 
@@ -107,6 +113,50 @@ def calculate_monthly_stats_for_etfs(etf_dict, etf_list):
 
     return pd.DataFrame(prob_results).T, pd.DataFrame(avg_return_results).T
 
+def get_recommendations(prob_df, avg_df, month_name, top_n=5, weight_prob=0.5, weight_return=0.5):
+    """
+    Get ETF recommendations for a specific month based on probability and returns
+
+    Parameters:
+    - prob_df: DataFrame with probability of positive returns
+    - avg_df: DataFrame with average returns
+    - month_name: Name of the month to get recommendations for
+    - top_n: Number of recommendations to return
+    - weight_prob: Weight for probability (0-1)
+    - weight_return: Weight for average return (0-1)
+    """
+    if month_name not in prob_df.columns or month_name not in avg_df.columns:
+        return None
+
+    # Normalize probability and returns to 0-100 scale
+    prob_scores = prob_df[month_name].fillna(0)
+
+    # Normalize returns (scale to 0-100)
+    returns = avg_df[month_name].fillna(avg_df[month_name].min())
+    return_min = returns.min()
+    return_max = returns.max()
+    if return_max != return_min:
+        return_scores = ((returns - return_min) / (return_max - return_min)) * 100
+    else:
+        return_scores = pd.Series(50, index=returns.index)
+
+    # Calculate composite score
+    composite_score = (weight_prob * prob_scores) + (weight_return * return_scores)
+
+    # Create recommendation dataframe
+    recommendations = pd.DataFrame({
+        'ETF': composite_score.index,
+        'Composite_Score': composite_score.values,
+        'Probability_%': prob_scores.values,
+        'Avg_Return_%': avg_df[month_name].values,
+        'Sharpe_Ratio': [np.nan] * len(composite_score)  # Will be filled later
+    })
+
+    recommendations = recommendations.sort_values('Composite_Score', ascending=False)
+    recommendations['Rank'] = range(1, len(recommendations) + 1)
+
+    return recommendations.head(top_n)
+
 def plot_cumulative_return(data_dict, title="Cumulative Return"):
     """Create plotly cumulative return chart"""
     fig = go.Figure()
@@ -155,21 +205,144 @@ if not all_data:
     st.error("No data loaded. Please check your selections.")
     st.stop()
 
-# Separate by asset class
-broad_cores_dict = {k: v for k, v in all_data.items() if k in BROAD_CORES}
-sectors_dict = {k: v for k, v in all_data.items() if k in SECTORS}
-commodities_dict = {k: v for k, v in all_data.items() if k in COMMODITIES}
+# Calculate Sharpe ratios for all ETFs
+sharpe_results = {}
+for ticker, data in all_data.items():
+    if not data.empty and 'pct_change' in data.columns:
+        sharpe = calculate_annual_sharpe(data['pct_change'].dropna())
+        sharpe_results[ticker] = sharpe
+
+# Calculate monthly statistics
+all_prob, all_avg = calculate_monthly_stats_for_etfs(all_data, list(all_data.keys()))
+
+# Get current month and next month
+current_date = datetime.now()
+current_month = current_date.strftime("%B")
+next_month_date = current_date + relativedelta(months=1)
+next_month = next_month_date.strftime("%B")
 
 # Tabs for different views
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🎯 Recommendations", 
     "📊 Overview", 
     "📈 Cumulative Returns", 
-    "🎯 Monthly Probability", 
+    "🎲 Monthly Probability", 
     "💰 Average Returns",
     "📉 Sharpe Ratios"
 ])
 
 with tab1:
+    st.header("🎯 ETF Investment Recommendations")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader(f"📅 Recommendations for {current_month}")
+        st.caption(f"Current Month: {current_month} {current_date.year}")
+
+        current_recs = get_recommendations(
+            all_prob, all_avg, current_month, 
+            top_n=top_n, 
+            weight_prob=weight_prob, 
+            weight_return=weight_return
+        )
+
+        if current_recs is not None:
+            # Add Sharpe ratios
+            current_recs['Sharpe_Ratio'] = current_recs['ETF'].map(sharpe_results)
+
+            # Display recommendations
+            for idx, row in current_recs.iterrows():
+                with st.container():
+                    st.markdown(f"### #{int(row['Rank'])} - **{row['ETF']}**")
+
+                    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+                    with metric_col1:
+                        st.metric("Score", f"{row['Composite_Score']:.1f}")
+                    with metric_col2:
+                        st.metric("Win Probability", f"{row['Probability_%']:.1f}%")
+                    with metric_col3:
+                        st.metric("Avg Return", f"{row['Avg_Return_%']:.2f}%")
+                    with metric_col4:
+                        if not pd.isna(row['Sharpe_Ratio']):
+                            st.metric("Sharpe Ratio", f"{row['Sharpe_Ratio']:.2f}")
+                        else:
+                            st.metric("Sharpe Ratio", "N/A")
+
+                    st.markdown("---")
+
+            # Download button
+            csv = current_recs.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                f"Download {current_month} Recommendations",
+                csv,
+                f"recommendations_{current_month.lower()}.csv",
+                "text/csv"
+            )
+        else:
+            st.warning(f"No data available for {current_month}")
+
+    with col2:
+        st.subheader(f"📅 Recommendations for {next_month}")
+        st.caption(f"Next Month: {next_month} {next_month_date.year}")
+
+        next_recs = get_recommendations(
+            all_prob, all_avg, next_month, 
+            top_n=top_n, 
+            weight_prob=weight_prob, 
+            weight_return=weight_return
+        )
+
+        if next_recs is not None:
+            # Add Sharpe ratios
+            next_recs['Sharpe_Ratio'] = next_recs['ETF'].map(sharpe_results)
+
+            # Display recommendations
+            for idx, row in next_recs.iterrows():
+                with st.container():
+                    st.markdown(f"### #{int(row['Rank'])} - **{row['ETF']}**")
+
+                    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+                    with metric_col1:
+                        st.metric("Score", f"{row['Composite_Score']:.1f}")
+                    with metric_col2:
+                        st.metric("Win Probability", f"{row['Probability_%']:.1f}%")
+                    with metric_col3:
+                        st.metric("Avg Return", f"{row['Avg_Return_%']:.2f}%")
+                    with metric_col4:
+                        if not pd.isna(row['Sharpe_Ratio']):
+                            st.metric("Sharpe Ratio", f"{row['Sharpe_Ratio']:.2f}")
+                        else:
+                            st.metric("Sharpe Ratio", "N/A")
+
+                    st.markdown("---")
+
+            # Download button
+            csv = next_recs.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                f"Download {next_month} Recommendations",
+                csv,
+                f"recommendations_{next_month.lower()}.csv",
+                "text/csv"
+            )
+        else:
+            st.warning(f"No data available for {next_month}")
+
+    # Methodology explanation
+    st.markdown("---")
+    st.subheader("📋 Methodology")
+    st.markdown(f"""
+    **How recommendations are calculated:**
+
+    1. **Composite Score** = ({weight_prob:.1f} × Probability) + ({weight_return:.1f} × Normalized Return)
+    2. **Probability**: Historical percentage of positive returns for this month
+    3. **Average Return**: Mean percentage return for this month across all years
+    4. **Sharpe Ratio**: Overall risk-adjusted return measure
+
+    **Note**: Past performance does not guarantee future results. These recommendations are based solely on historical patterns.
+    """)
+
+with tab2:
     st.header("Overview")
 
     col1, col2, col3 = st.columns(3)
@@ -179,9 +352,12 @@ with tab1:
     with col2:
         st.metric("Time Period", period.upper())
     with col3:
-        st.metric("Data Interval", interval.upper())
+        st.metric("Current Month", current_month)
 
-    st.subheader("ETFs Included in Analysis")
+    # Separate by asset class
+    broad_cores_dict = {k: v for k, v in all_data.items() if k in BROAD_CORES}
+    sectors_dict = {k: v for k, v in all_data.items() if k in SECTORS}
+    commodities_dict = {k: v for k, v in all_data.items() if k in COMMODITIES}
 
     if broad_cores_dict:
         st.write("**Broad Core ETFs:**", ", ".join(broad_cores_dict.keys()))
@@ -190,8 +366,13 @@ with tab1:
     if commodities_dict:
         st.write("**Commodity ETFs:**", ", ".join(commodities_dict.keys()))
 
-with tab2:
+with tab3:
     st.header("Cumulative Returns")
+
+    # Separate by asset class
+    broad_cores_dict = {k: v for k, v in all_data.items() if k in BROAD_CORES}
+    sectors_dict = {k: v for k, v in all_data.items() if k in SECTORS}
+    commodities_dict = {k: v for k, v in all_data.items() if k in COMMODITIES}
 
     if broad_cores_dict:
         st.subheader("Broad Core ETFs")
@@ -208,143 +389,48 @@ with tab2:
         fig = plot_cumulative_return(commodities_dict, "Cumulative Return - Commodity ETFs")
         st.plotly_chart(fig, use_container_width=True)
 
-    # Combined view
-    if len(all_data) > 1:
-        st.subheader("All ETFs Combined")
-        fig = plot_cumulative_return(all_data, "Cumulative Return - All ETFs")
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab3:
+with tab4:
     st.header("Monthly Probability of Positive Returns")
 
-    # Calculate probabilities
-    if broad_cores_dict:
-        st.subheader("Broad Core ETFs")
-        broad_prob, _ = calculate_monthly_stats_for_etfs(broad_cores_dict, list(broad_cores_dict.keys()))
-        st.dataframe(broad_prob.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+    st.dataframe(all_prob.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
 
-        # Download button
-        csv = broad_prob.to_csv().encode('utf-8')
-        st.download_button(
-            "Download Broad Core Probability Data",
-            csv,
-            "broad_cores_probability.csv",
-            "text/csv"
-        )
+    # Highlight current and next month
+    st.subheader(f"Focus: {current_month} & {next_month}")
 
-    if sectors_dict:
-        st.subheader("Sector ETFs")
-        sectors_prob, _ = calculate_monthly_stats_for_etfs(sectors_dict, list(sectors_dict.keys()))
-        st.dataframe(sectors_prob.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+    focus_months = [current_month, next_month]
+    focus_prob = all_prob[focus_months].round(2)
+    st.dataframe(focus_prob.style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
 
-        csv = sectors_prob.to_csv().encode('utf-8')
-        st.download_button(
-            "Download Sector Probability Data",
-            csv,
-            "sectors_probability.csv",
-            "text/csv"
-        )
-
-    if commodities_dict:
-        st.subheader("Commodity ETFs")
-        commodities_prob, _ = calculate_monthly_stats_for_etfs(commodities_dict, list(commodities_dict.keys()))
-        st.dataframe(commodities_prob.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
-
-        csv = commodities_prob.to_csv().encode('utf-8')
-        st.download_button(
-            "Download Commodity Probability Data",
-            csv,
-            "commodities_probability.csv",
-            "text/csv"
-        )
-
-    # Summary by month
-    if len(all_data) > 1:
-        st.subheader("Average Probability by Month (All ETFs)")
-        all_prob, _ = calculate_monthly_stats_for_etfs(all_data, list(all_data.keys()))
-        month_avg_prob = all_prob.mean(axis=0).to_frame(name="Average Probability (%)")
-
-        fig = go.Figure(data=[
-            go.Bar(x=month_avg_prob.index, y=month_avg_prob["Average Probability (%)"], 
-                   marker_color='lightblue')
-        ])
-        fig.update_layout(
-            title="Average Probability of Positive Return by Month",
-            xaxis_title="Month",
-            yaxis_title="Probability (%)",
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab4:
-    st.header("Average Monthly Returns")
-
-    # Calculate average returns
-    if broad_cores_dict:
-        st.subheader("Broad Core ETFs")
-        _, broad_avg = calculate_monthly_stats_for_etfs(broad_cores_dict, list(broad_cores_dict.keys()))
-        st.dataframe(broad_avg.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
-
-        csv = broad_avg.to_csv().encode('utf-8')
-        st.download_button(
-            "Download Broad Core Average Returns",
-            csv,
-            "broad_cores_avg_returns.csv",
-            "text/csv"
-        )
-
-    if sectors_dict:
-        st.subheader("Sector ETFs")
-        _, sectors_avg = calculate_monthly_stats_for_etfs(sectors_dict, list(sectors_dict.keys()))
-        st.dataframe(sectors_avg.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
-
-        csv = sectors_avg.to_csv().encode('utf-8')
-        st.download_button(
-            "Download Sector Average Returns",
-            csv,
-            "sectors_avg_returns.csv",
-            "text/csv"
-        )
-
-    if commodities_dict:
-        st.subheader("Commodity ETFs")
-        _, commodities_avg = calculate_monthly_stats_for_etfs(commodities_dict, list(commodities_dict.keys()))
-        st.dataframe(commodities_avg.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
-
-        csv = commodities_avg.to_csv().encode('utf-8')
-        st.download_button(
-            "Download Commodity Average Returns",
-            csv,
-            "commodities_avg_returns.csv",
-            "text/csv"
-        )
-
-    # Summary by month
-    if len(all_data) > 1:
-        st.subheader("Average Return by Month (All ETFs)")
-        _, all_avg = calculate_monthly_stats_for_etfs(all_data, list(all_data.keys()))
-        month_avg_return = all_avg.mean(axis=0).to_frame(name="Average Return (%)")
-
-        fig = go.Figure(data=[
-            go.Bar(x=month_avg_return.index, y=month_avg_return["Average Return (%)"],
-                   marker_color='lightgreen')
-        ])
-        fig.update_layout(
-            title="Average Return by Month",
-            xaxis_title="Month",
-            yaxis_title="Return (%)",
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    csv = all_prob.to_csv().encode('utf-8')
+    st.download_button(
+        "Download All Probability Data",
+        csv,
+        "monthly_probability.csv",
+        "text/csv"
+    )
 
 with tab5:
-    st.header("Sharpe Ratios")
+    st.header("Average Monthly Returns")
 
-    sharpe_results = {}
-    for ticker, data in all_data.items():
-        if not data.empty and 'pct_change' in data.columns:
-            sharpe = calculate_annual_sharpe(data['pct_change'].dropna())
-            sharpe_results[ticker] = sharpe
+    st.dataframe(all_avg.round(2).style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+
+    # Highlight current and next month
+    st.subheader(f"Focus: {current_month} & {next_month}")
+
+    focus_months = [current_month, next_month]
+    focus_avg = all_avg[focus_months].round(2)
+    st.dataframe(focus_avg.style.background_gradient(cmap='RdYlGn', axis=1), use_container_width=True)
+
+    csv = all_avg.to_csv().encode('utf-8')
+    st.download_button(
+        "Download All Average Returns",
+        csv,
+        "monthly_avg_returns.csv",
+        "text/csv"
+    )
+
+with tab6:
+    st.header("Sharpe Ratios")
 
     if sharpe_results:
         sharpe_df = pd.DataFrame.from_dict(sharpe_results, orient='index', columns=['Sharpe Ratio'])
@@ -380,4 +466,4 @@ with tab5:
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.info("Data source: Yahoo Finance via yfinance")
-st.sidebar.caption("Note: Past performance does not guarantee future results.")
+st.sidebar.caption("⚠️ Disclaimer: Past performance does not guarantee future results. These recommendations are for informational purposes only and should not be considered financial advice.")
