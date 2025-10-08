@@ -40,6 +40,7 @@ class ETFBacktester:
                 df = yf.Ticker(ticker).history(start=lookback_start, end=self.end_date, interval='1mo')
                 if not df.empty:
                     df['pct_change'] = df['Close'].pct_change() * 100
+                    df.index = pd.to_datetime(df.index, utc=True)
                     self.data[ticker] = df
                 loaded += 1
                 if progress_callback:
@@ -68,6 +69,8 @@ class ETFBacktester:
     def get_monthly_stats(self, ticker, end_date):
         if ticker not in self.data:
             return None, None
+
+        end_date = pd.to_datetime(end_date, utc=True)
 
         df = self.data[ticker][self.data[ticker].index <= end_date].copy()
         if len(df) < 12:
