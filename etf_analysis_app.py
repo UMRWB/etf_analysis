@@ -661,7 +661,7 @@ with tab2:
                     height=500
                 )
 
-                st.plotly_chart(fig, width=True)
+                st.plotly_chart(fig, config={width=True})
 
                 st.subheader("📊 Monthly Returns Distribution")
 
@@ -682,7 +682,7 @@ with tab2:
                     height=400
                 )
 
-                st.plotly_chart(fig2, width=True)
+                st.plotly_chart(fig2, config={width=True})
 
                 st.subheader("📋 Detailed Results")
                 st.dataframe(
