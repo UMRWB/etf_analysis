@@ -282,7 +282,7 @@ with tab_backtest:
                     weight_prob=bt_weight_prob,
                     weight_return=bt_weight_return,
                     top_n=bt_top_n,
-                    progress_callback=lambda p: max(progress_bar.progress(p), 1.0)
+                    # progress_callback=lambda p: progress_bar.progress(p)
                 )
 
                 progress_bar.empty()
