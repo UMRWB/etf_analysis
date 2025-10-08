@@ -124,7 +124,7 @@ class ETFBacktester:
         benchmark_value = 100000
         results = []
         months_processed = 0
-        total_months = (self.end_date.year - self.start_date.year) * 12 + (self.end_date.month - self.start_date.month)
+        total_months = (self.end_date.year - self.start_date.year) * 12 + (self.end_date.month - self.start_date.month) + 1
 
         while current_date <= self.end_date:
             month_name = current_date.strftime("%B")
