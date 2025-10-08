@@ -28,6 +28,7 @@ class ETFBacktester:
         self.lookback_years = lookback_years
         self.data = {}
         self.results = []
+        self.benchmark_data = None
 
     def load_data(self, progress_callback=None):
         """Load historical data for all tickers"""
@@ -39,13 +40,24 @@ class ETFBacktester:
                 df = yf.Ticker(ticker).history(start=lookback_start, end=self.end_date, interval='1mo')
                 if not df.empty:
                     df['pct_change'] = df['Close'].pct_change() * 100
-                    df.index = pd.to_datetime(df.index, utc=True)
                     self.data[ticker] = df
                 loaded += 1
                 if progress_callback:
                     progress_callback(loaded / len(self.tickers))
             except:
                 pass
+
+    def load_benchmark(self, benchmark_ticker='VOO'):
+        """Load benchmark data"""
+        try:
+            df = yf.Ticker(benchmark_ticker).history(start=self.start_date, end=self.end_date, interval='1mo')
+            if not df.empty:
+                df['pct_change'] = df['Close'].pct_change() * 100
+                self.benchmark_data = df
+                return True
+        except:
+            return False
+        return False
 
     def calc_positive_prob(self, column):
         valid_values = column.dropna()
@@ -56,8 +68,6 @@ class ETFBacktester:
     def get_monthly_stats(self, ticker, end_date):
         if ticker not in self.data:
             return None, None
-
-        end_date = pd.to_datetime(end_date, utc=True)
 
         df = self.data[ticker][self.data[ticker].index <= end_date].copy()
         if len(df) < 12:
@@ -108,6 +118,7 @@ class ETFBacktester:
     def run_backtest(self, weight_prob=0.5, weight_return=0.5, top_n=1, progress_callback=None):
         current_date = self.start_date
         portfolio_value = 100000
+        benchmark_value = 100000
         results = []
         months_processed = 0
         total_months = (self.end_date.year - self.start_date.year) * 12 + (self.end_date.month - self.start_date.month)
@@ -122,6 +133,7 @@ class ETFBacktester:
                 current_date += relativedelta(months=1)
                 continue
 
+            # Calculate strategy returns
             month_returns = {}
             for ticker in recommended_etfs:
                 if ticker in self.data:
@@ -140,13 +152,26 @@ class ETFBacktester:
             else:
                 portfolio_return = 0
 
+            # Calculate benchmark returns
+            benchmark_return = 0
+            if self.benchmark_data is not None:
+                bench_month = self.benchmark_data[(self.benchmark_data.index.year == current_date.year) & 
+                                                 (self.benchmark_data.index.month == current_date.month)]
+                if not bench_month.empty and 'pct_change' in bench_month.columns:
+                    bench_ret = bench_month['pct_change'].iloc[0]
+                    if not pd.isna(bench_ret):
+                        benchmark_return = bench_ret
+                        benchmark_value *= (1 + benchmark_return / 100)
+
             results.append({
                 'Date': current_date,
                 'Month': month_name,
                 'Year': current_date.year,
                 'Holdings': ', '.join(recommended_etfs),
                 'Returns_%': portfolio_return,
-                'Portfolio_Value': portfolio_value
+                'Portfolio_Value': portfolio_value,
+                'Benchmark_Returns_%': benchmark_return,
+                'Benchmark_Value': benchmark_value
             })
 
             current_date += relativedelta(months=1)
@@ -159,9 +184,10 @@ class ETFBacktester:
 
     def calculate_metrics(self):
         if self.results.empty:
-            return None
+            return None, None
 
         returns = self.results['Returns_%'].values
+        benchmark_returns = self.results['Benchmark_Returns_%'].values
 
         def annualized_return(rets):
             total_return = np.prod(1 + rets / 100) - 1
@@ -187,7 +213,7 @@ class ETFBacktester:
                     max_dd = dd
             return max_dd
 
-        metrics = {
+        strategy_metrics = {
             'Total Return (%)': ((self.results['Portfolio_Value'].iloc[-1] / 100000) - 1) * 100,
             'Annualized Return (%)': annualized_return(returns),
             'Total Months': len(returns),
@@ -202,7 +228,22 @@ class ETFBacktester:
             'Max Drawdown (%)': max_drawdown(self.results['Portfolio_Value'].values)
         }
 
-        return metrics
+        benchmark_metrics = {
+            'Total Return (%)': ((self.results['Benchmark_Value'].iloc[-1] / 100000) - 1) * 100,
+            'Annualized Return (%)': annualized_return(benchmark_returns),
+            'Total Months': len(benchmark_returns),
+            'Winning Months': (benchmark_returns > 0).sum(),
+            'Losing Months': (benchmark_returns < 0).sum(),
+            'Win Rate (%)': ((benchmark_returns > 0).sum() / len(benchmark_returns)) * 100,
+            'Average Return (%)': benchmark_returns.mean(),
+            'Std Dev (%)': benchmark_returns.std(),
+            'Best Month (%)': benchmark_returns.max(),
+            'Worst Month (%)': benchmark_returns.min(),
+            'Sharpe Ratio': sharpe_ratio(benchmark_returns),
+            'Max Drawdown (%)': max_drawdown(self.results['Benchmark_Value'].values)
+        }
+
+        return strategy_metrics, benchmark_metrics
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -544,7 +585,7 @@ with tab1:
 # TAB 2: BACKTEST
 with tab2:
     st.header("🔬 Strategy Backtest")
-    st.markdown("Test the historical performance of the recommendation strategy")
+    st.markdown("Test the historical performance of the recommendation strategy vs. VOO (S&P 500)")
 
     col1, col2 = st.columns(2)
 
@@ -579,6 +620,7 @@ with tab2:
             bt_tickers.extend(COMMODITIES)
 
         st.info(f"Total ETFs: {len(bt_tickers)}")
+        st.info("📊 Benchmark: VOO (S&P 500)")
 
     if run_backtest:
         if not bt_tickers:
@@ -596,55 +638,89 @@ with tab2:
                 status_text = st.empty()
 
                 status_text.text("Loading historical data...")
-                backtester.load_data(lambda p: progress_bar.progress(p))
+                backtester.load_data(lambda p: progress_bar.progress(p * 0.5))
+
+                status_text.text("Loading VOO benchmark data...")
+                benchmark_loaded = backtester.load_benchmark('VOO')
+                progress_bar.progress(0.6)
+
+                if not benchmark_loaded:
+                    st.warning("Could not load VOO benchmark data. Continuing without benchmark comparison.")
 
                 status_text.text("Running backtest simulation...")
-                progress_bar.progress(0)
                 results = backtester.run_backtest(
                     weight_prob=bt_weight_prob,
                     weight_return=bt_weight_return,
                     top_n=bt_top_n,
-                    # progress_callback=lambda p: progress_bar.progress(p)
+                    progress_callback=lambda p: progress_bar.progress(0.6 + p * 0.4)
                 )
 
                 progress_bar.empty()
                 status_text.empty()
 
-                metrics = backtester.calculate_metrics()
+                strategy_metrics, benchmark_metrics = backtester.calculate_metrics()
 
                 st.success("Backtest complete!")
 
-                st.subheader("📊 Performance Metrics")
+                # Performance comparison
+                st.subheader("📊 Performance Comparison: Strategy vs. VOO")
 
-                col1, col2, col3, col4 = st.columns(4)
-
-                with col1:
-                    st.metric("Total Return", f"{metrics['Total Return (%)']:.2f}%")
-                    st.metric("Win Rate", f"{metrics['Win Rate (%)']:.2f}%")
-
-                with col2:
-                    st.metric("Annualized Return", f"{metrics['Annualized Return (%)']:.2f}%")
-                    st.metric("Sharpe Ratio", f"{metrics['Sharpe Ratio']:.2f}")
-
-                with col3:
-                    st.metric("Winning Months", int(metrics['Winning Months']))
-                    st.metric("Best Month", f"{metrics['Best Month (%)']:.2f}%")
-
-                with col4:
-                    st.metric("Losing Months", int(metrics['Losing Months']))
-                    st.metric("Worst Month", f"{metrics['Worst Month (%)']:.2f}%")
-
-                st.markdown("---")
                 col1, col2, col3 = st.columns(3)
 
                 with col1:
-                    st.metric("Avg Monthly Return", f"{metrics['Average Return (%)']:.2f}%")
-                with col2:
-                    st.metric("Monthly Volatility", f"{metrics['Std Dev (%)']:.2f}%")
-                with col3:
-                    st.metric("Max Drawdown", f"{metrics['Max Drawdown (%)']:.2f}%")
+                    st.markdown("### Strategy")
+                    st.metric("Total Return", f"{strategy_metrics['Total Return (%)']:.2f}%")
+                    st.metric("Annualized Return", f"{strategy_metrics['Annualized Return (%)']:.2f}%")
+                    st.metric("Sharpe Ratio", f"{strategy_metrics['Sharpe Ratio']:.2f}")
+                    st.metric("Max Drawdown", f"{strategy_metrics['Max Drawdown (%)']:.2f}%")
 
-                st.subheader("📈 Portfolio Value Over Time")
+                with col2:
+                    st.markdown("### VOO (Benchmark)")
+                    st.metric("Total Return", f"{benchmark_metrics['Total Return (%)']:.2f}%")
+                    st.metric("Annualized Return", f"{benchmark_metrics['Annualized Return (%)']:.2f}%")
+                    st.metric("Sharpe Ratio", f"{benchmark_metrics['Sharpe Ratio']:.2f}")
+                    st.metric("Max Drawdown", f"{benchmark_metrics['Max Drawdown (%)']:.2f}%")
+
+                with col3:
+                    st.markdown("### Outperformance")
+                    outperf_total = strategy_metrics['Total Return (%)'] - benchmark_metrics['Total Return (%)']
+                    outperf_annual = strategy_metrics['Annualized Return (%)'] - benchmark_metrics['Annualized Return (%)']
+                    outperf_sharpe = strategy_metrics['Sharpe Ratio'] - benchmark_metrics['Sharpe Ratio']
+                    outperf_dd = benchmark_metrics['Max Drawdown (%)'] - strategy_metrics['Max Drawdown (%)']
+
+                    st.metric("Total Return", f"{outperf_total:+.2f}%", 
+                             delta=f"{outperf_total:.2f}%")
+                    st.metric("Annualized Return", f"{outperf_annual:+.2f}%",
+                             delta=f"{outperf_annual:.2f}%")
+                    st.metric("Sharpe Ratio", f"{outperf_sharpe:+.2f}",
+                             delta=f"{outperf_sharpe:.2f}")
+                    st.metric("DD Improvement", f"{outperf_dd:+.2f}%",
+                             delta=f"{outperf_dd:.2f}%", delta_color="normal")
+
+                # Detailed metrics
+                st.markdown("---")
+                st.subheader("📈 Detailed Metrics")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("#### Strategy Performance")
+                    metrics_df = pd.DataFrame({
+                        'Metric': list(strategy_metrics.keys()),
+                        'Value': [f"{v:.2f}" if isinstance(v, (int, float)) else v for v in strategy_metrics.values()]
+                    })
+                    st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+
+                with col2:
+                    st.markdown("#### VOO Benchmark Performance")
+                    bench_df = pd.DataFrame({
+                        'Metric': list(benchmark_metrics.keys()),
+                        'Value': [f"{v:.2f}" if isinstance(v, (int, float)) else v for v in benchmark_metrics.values()]
+                    })
+                    st.dataframe(bench_df, use_container_width=True, hide_index=True)
+
+                # Portfolio value chart with benchmark
+                st.subheader("📈 Portfolio Value Over Time: Strategy vs. VOO")
 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
@@ -654,6 +730,13 @@ with tab2:
                     line=dict(color='blue', width=2)
                 ))
 
+                fig.add_trace(go.Scatter(
+                    x=results['Date'],
+                    y=results['Benchmark_Value'],
+                    name='VOO (Benchmark)',
+                    line=dict(color='gray', width=2, dash='dash')
+                ))
+
                 fig.update_layout(
                     xaxis_title="Date",
                     yaxis_title="Portfolio Value ($)",
@@ -661,34 +744,74 @@ with tab2:
                     height=500
                 )
 
-                st.plotly_chart(fig, width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
-                st.subheader("📊 Monthly Returns Distribution")
+                # Monthly returns comparison
+                st.subheader("📊 Monthly Returns: Strategy vs. VOO")
 
                 fig2 = go.Figure()
-                colors = ['green' if r > 0 else 'red' for r in results['Returns_%']]
 
                 fig2.add_trace(go.Bar(
                     x=results['Date'],
                     y=results['Returns_%'],
-                    marker_color=colors,
-                    name='Monthly Return'
+                    name='Strategy',
+                    marker_color='lightblue',
+                    opacity=0.7
+                ))
+
+                fig2.add_trace(go.Bar(
+                    x=results['Date'],
+                    y=results['Benchmark_Returns_%'],
+                    name='VOO',
+                    marker_color='lightgray',
+                    opacity=0.7
                 ))
 
                 fig2.update_layout(
                     xaxis_title="Date",
                     yaxis_title="Return (%)",
+                    barmode='group',
                     hovermode='x unified',
                     height=400
                 )
 
-                st.plotly_chart(fig2, width=True)
+                st.plotly_chart(fig2, use_container_width=True)
 
+                # Outperformance by month
+                st.subheader("📊 Monthly Outperformance (Strategy - VOO)")
+
+                results['Outperformance_%'] = results['Returns_%'] - results['Benchmark_Returns_%']
+
+                fig3 = go.Figure()
+                colors = ['green' if r > 0 else 'red' for r in results['Outperformance_%']]
+
+                fig3.add_trace(go.Bar(
+                    x=results['Date'],
+                    y=results['Outperformance_%'],
+                    marker_color=colors,
+                    name='Outperformance'
+                ))
+
+                fig3.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
+
+                fig3.update_layout(
+                    xaxis_title="Date",
+                    yaxis_title="Outperformance (%)",
+                    hovermode='x unified',
+                    height=400
+                )
+
+                st.plotly_chart(fig3, use_container_width=True)
+
+                # Detailed results table
                 st.subheader("📋 Detailed Results")
                 st.dataframe(
-                    results[['Date', 'Month', 'Holdings', 'Returns_%', 'Portfolio_Value']].style.format({
+                    results[['Date', 'Month', 'Holdings', 'Returns_%', 'Benchmark_Returns_%', 'Outperformance_%', 'Portfolio_Value', 'Benchmark_Value']].style.format({
                         'Returns_%': '{:.2f}',
-                        'Portfolio_Value': '${:,.2f}'
+                        'Benchmark_Returns_%': '{:.2f}',
+                        'Outperformance_%': '{:.2f}',
+                        'Portfolio_Value': '${:,.2f}',
+                        'Benchmark_Value': '${:,.2f}'
                     }),
                     use_container_width=True
                 )
@@ -697,7 +820,7 @@ with tab2:
                 st.download_button(
                     "Download Full Results (CSV)",
                     csv,
-                    "backtest_results.csv",
+                    "backtest_results_with_benchmark.csv",
                     "text/csv"
                 )
 
@@ -736,17 +859,17 @@ with tab4:
     if broad_cores_dict:
         st.subheader("Broad Core ETFs")
         fig = plot_cumulative_return(broad_cores_dict, "Cumulative Return - Broad Core ETFs")
-        st.plotly_chart(fig, width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
     if sectors_dict:
         st.subheader("Sector ETFs")
         fig = plot_cumulative_return(sectors_dict, "Cumulative Return - Sector ETFs")
-        st.plotly_chart(fig, width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
     if commodities_dict:
         st.subheader("Commodity ETFs")
         fig = plot_cumulative_return(commodities_dict, "Cumulative Return - Commodity ETFs")
-        st.plotly_chart(fig, width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
 # TAB 5: MONTHLY PROBABILITY
 with tab5:
@@ -811,7 +934,7 @@ with tab7:
                 yaxis_title="Sharpe Ratio",
                 height=500
             )
-            st.plotly_chart(fig, width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             st.subheader("Rankings")
