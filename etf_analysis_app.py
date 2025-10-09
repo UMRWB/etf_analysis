@@ -17,9 +17,8 @@ st.set_page_config(
 # ============================================================================
 # BACKTEST CLASS
 # ============================================================================
-
-class ETFBacktester:
-    """Backtest the ETF recommendation strategy"""
+class EnhancedETFBacktester:
+    """Enhanced ETF backtester with momentum, sector limits, data quality, and risk parity"""
 
     def __init__(self, tickers, start_date, end_date, lookback_years=5):
         self.tickers = tickers
@@ -30,8 +29,21 @@ class ETFBacktester:
         self.results = []
         self.benchmark_data = None
 
+        # Sector mapping for Quick Win #2
+        self.sector_map = {
+            'XLC': 'Communication', 'XLY': 'Consumer Discretionary', 
+            'XLP': 'Consumer Staples', 'XLE': 'Energy', 'XLF': 'Financials',
+            'XLV': 'Healthcare', 'XLI': 'Industrials', 'XLB': 'Materials',
+            'XLRE': 'Real Estate', 'XLK': 'Technology', 'XLU': 'Utilities',
+            'VOO': 'Broad Market', 'VTI': 'Broad Market', 'VT': 'Broad Market',
+            'VXUS': 'International', 'VEA': 'International',
+            'GLD': 'Commodities', 'SLV': 'Commodities'
+        }
+
     def load_data(self, progress_callback=None):
-        """Load historical data for all tickers"""
+        """Load historical ETF data"""
+        import yfinance as yf
+
         lookback_start = self.start_date - relativedelta(years=self.lookback_years + 1)
         loaded = 0
 
@@ -40,7 +52,6 @@ class ETFBacktester:
                 df = yf.Ticker(ticker).history(start=lookback_start, end=self.end_date, interval='1mo')
                 if not df.empty:
                     df['pct_change'] = df['Close'].pct_change() * 100
-                    df.index = pd.to_datetime(df.index, utc=True)
                     self.data[ticker] = df
                 loaded += 1
                 if progress_callback:
@@ -49,7 +60,9 @@ class ETFBacktester:
                 pass
 
     def load_benchmark(self, benchmark_ticker='VOO'):
-        """Load benchmark data"""
+        """Load benchmark (VOO) data"""
+        import yfinance as yf
+
         try:
             df = yf.Ticker(benchmark_ticker).history(start=self.start_date, end=self.end_date, interval='1mo')
             if not df.empty:
@@ -60,21 +73,98 @@ class ETFBacktester:
             return False
         return False
 
-    def calc_positive_prob(self, column):
-        valid_values = column.dropna()
-        if len(valid_values) == 0:
-            return np.nan
-        return ((valid_values > 0).sum() / len(valid_values)) * 100
+    # ========================================================================
+    # QUICK WIN #1: Momentum Factor
+    # ========================================================================
 
-    def get_monthly_stats(self, ticker, end_date):
+    def calculate_momentum(self, ticker, as_of_date, lookback_months=3):
+        """
+        Calculate trailing momentum over specified months.
+
+        Momentum = (1 + r1) × (1 + r2) × (1 + r3) - 1
+
+        Args:
+            ticker: ETF ticker symbol
+            as_of_date: Date to calculate momentum as of
+            lookback_months: Number of months to look back (default: 3)
+
+        Returns:
+            float: Compounded return percentage, or np.nan if insufficient data
+        """
         if ticker not in self.data:
-            return None, None
+            return np.nan
 
-        end_date = pd.to_datetime(end_date, utc=True)
+        df = self.data[ticker][self.data[ticker].index <= as_of_date].copy()
+
+        if len(df) < lookback_months + 1:
+            return np.nan
+
+        # Get last N months of returns (skip first NaN from pct_change)
+        recent_returns = df['pct_change'].tail(lookback_months + 1).iloc[1:]
+
+        if len(recent_returns) < lookback_months:
+            return np.nan
+
+        # Compound the returns
+        cumulative_return = ((1 + recent_returns / 100).prod() - 1) * 100
+        return cumulative_return
+
+    # ========================================================================
+    # QUICK WIN #4: Risk Parity - Volatility Calculation
+    # ========================================================================
+
+    def calculate_volatility(self, ticker, as_of_date, lookback_months=12):
+        """
+        Calculate rolling volatility for risk parity weighting.
+
+        Args:
+            ticker: ETF ticker symbol
+            as_of_date: Date to calculate volatility as of
+            lookback_months: Number of months for rolling window (default: 12)
+
+        Returns:
+            float: Standard deviation of monthly returns, or np.nan if insufficient data
+        """
+        if ticker not in self.data:
+            return np.nan
+
+        df = self.data[ticker][self.data[ticker].index <= as_of_date].copy()
+
+        if len(df) < lookback_months + 1:
+            return np.nan
+
+        recent_returns = df['pct_change'].tail(lookback_months + 1).iloc[1:]
+
+        if len(recent_returns) < lookback_months:
+            return np.nan
+
+        return recent_returns.std()
+
+    # ========================================================================
+    # QUICK WIN #3: Minimum Observations Filter
+    # ========================================================================
+
+    def get_monthly_stats(self, ticker, end_date, min_observations=5):
+        """
+        Calculate monthly statistics with minimum sample requirement.
+
+        Args:
+            ticker: ETF ticker symbol
+            end_date: Use data only up to this date
+            min_observations: Minimum number of data points required (default: 5)
+
+        Returns:
+            tuple: (probability_series, avg_return_series, sample_counts)
+                   Series are indexed by month name (January-December)
+                   Values are np.nan if sample count < min_observations
+        """
+        if ticker not in self.data:
+            return None, None, None
 
         df = self.data[ticker][self.data[ticker].index <= end_date].copy()
+
         if len(df) < 12:
-            return None, None
+            return None, None, None
 
         df['Year'] = df.index.year
         df['Month'] = df.index.month_name()
@@ -82,95 +172,283 @@ class ETFBacktester:
         month_order = ['January', 'February', 'March', 'April', 'May', 'June',
                       'July', 'August', 'September', 'October', 'November', 'December']
 
-        pivot = df.pivot_table(values='pct_change', index='Year', columns='Month', aggfunc='first')
+        # Create pivot: years as rows, months as columns
+        pivot = df.pivot_table(values='pct_change', index='Year', 
+                              columns='Month', aggfunc='first')
         pivot = pivot.reindex(columns=month_order)
 
-        prob = pivot.apply(self.calc_positive_prob, axis=0)
+        # Calculate statistics
+        prob = pivot.apply(lambda col: ((col.dropna() > 0).sum() / len(col.dropna()) * 100) 
+                          if len(col.dropna()) > 0 else np.nan, axis=0)
         avg_return = pivot.mean(axis=0)
+        sample_counts = pivot.notna().sum(axis=0)
 
-        return prob, avg_return
+        # Apply minimum observation filter (Quick Win #3)
+        prob[sample_counts < min_observations] = np.nan
+        avg_return[sample_counts < min_observations] = np.nan
 
-    def get_recommendation(self, month_name, as_of_date, weight_prob=0.5, weight_return=0.5, top_n=1):
-        all_probs = {}
-        all_avgs = {}
+        return prob, avg_return, sample_counts
 
+    # ========================================================================
+    # QUICK WIN #2: Sector Concentration Limits
+    # ========================================================================
+
+    def apply_sector_constraints(self, recommendations, max_sector_weight=0.4):
+        """
+        Enforce sector concentration limits.
+
+        Args:
+            recommendations: List of ETF tickers (ordered by score)
+            max_sector_weight: Maximum weight allowed per sector (default: 0.4 = 40%)
+
+        Returns:
+            list: Filtered recommendations respecting sector limits
+        """
+        if not recommendations:
+            return recommendations
+
+        sector_weights = {}
+        constrained_recs = []
+        weight_per_etf = 1.0 / len(recommendations)
+
+        for etf in recommendations:
+            sector = self.sector_map.get(etf, 'Other')
+            current_weight = sector_weights.get(sector, 0)
+
+            # Only add if it doesn't breach sector limit
+            if current_weight + weight_per_etf <= max_sector_weight:
+                constrained_recs.append(etf)
+                sector_weights[sector] = current_weight + weight_per_etf
+
+        # Ensure minimum diversification (at least 3 ETFs if possible)
+        if len(constrained_recs) < min(3, len(recommendations)):
+            constrained_recs = recommendations[:min(3, len(recommendations))]
+
+        return constrained_recs
+
+    # ========================================================================
+    # QUICK WIN #4: Risk Parity Weighting
+    # ========================================================================
+
+    def calculate_risk_parity_weights(self, selected_etfs, as_of_date):
+        """
+        Calculate inverse volatility (risk parity) weights.
+
+        Lower volatility ETFs receive higher weights.
+        Weight_i = (1/σ_i) / Σ(1/σ_j)
+
+        Args:
+            selected_etfs: List of ETF tickers to weight
+            as_of_date: Date to calculate volatility as of
+
+        Returns:
+            dict: {ticker: weight} mapping, weights sum to 1.0
+        """
+        volatilities = {}
+
+        for etf in selected_etfs:
+            vol = self.calculate_volatility(etf, as_of_date)
+            if not np.isnan(vol) and vol > 0:
+                volatilities[etf] = vol
+
+        # Fallback to equal weight if no volatility data
+        if not volatilities:
+            return {etf: 1.0 / len(selected_etfs) for etf in selected_etfs}
+
+        # Inverse volatility weighting
+        inv_vols = {etf: 1.0 / vol for etf, vol in volatilities.items()}
+        total_inv_vol = sum(inv_vols.values())
+        weights = {etf: inv_vol / total_inv_vol for etf, inv_vol in inv_vols.items()}
+
+        # Ensure all selected ETFs have weights (even if 0)
+        for etf in selected_etfs:
+            if etf not in weights:
+                weights[etf] = 0.0
+
+        return weights
+
+    # ========================================================================
+    # ENHANCED RECOMMENDATION ENGINE
+    # ========================================================================
+
+    def get_recommendation(self, month_name, as_of_date, 
+                          weight_prob=0.3, weight_return=0.3, weight_momentum=0.4,
+                          top_n=5, use_sector_limits=True, use_risk_parity=True,
+                          min_observations=5):
+        """
+        Generate enhanced ETF recommendations with all Quick Wins.
+
+        Scoring Formula:
+        ----------------
+        Score = (weight_prob × Probability) + 
+                (weight_return × Normalized_AvgReturn) + 
+                (weight_momentum × Normalized_Momentum)
+
+        Args:
+            month_name: Target month (e.g., "October")
+            as_of_date: Decision date (must be before target month)
+            weight_prob: Weight for win probability (default: 0.3)
+            weight_return: Weight for average return (default: 0.3)
+            weight_momentum: Weight for 3-month momentum (default: 0.4)
+            top_n: Number of ETFs to select (default: 5)
+            use_sector_limits: Apply 40% sector cap (default: True)
+            use_risk_parity: Use inverse vol weighting (default: True)
+            min_observations: Min data points required (default: 5)
+
+        Returns:
+            tuple: (list of selected ETF tickers, dict of weights)
+        """
+        all_probs, all_avgs, all_momentum = {}, {}, {}
+
+        # Gather stats for each ETF
         for ticker in self.tickers:
-            prob, avg = self.get_monthly_stats(ticker, as_of_date)
+            prob, avg, _ = self.get_monthly_stats(ticker, as_of_date, min_observations)
+            momentum = self.calculate_momentum(ticker, as_of_date)
+
             if prob is not None and month_name in prob.index:
                 all_probs[ticker] = prob[month_name]
                 all_avgs[ticker] = avg[month_name]
+                all_momentum[ticker] = momentum
 
         if not all_probs:
-            return None
+            return None, None
 
-        prob_series = pd.Series(all_probs).fillna(0)
+        # Convert to series
+        prob_series = pd.Series(all_probs)
         avg_series = pd.Series(all_avgs)
+        momentum_series = pd.Series(all_momentum)
 
-        return_min = avg_series.min()
-        return_max = avg_series.max()
-        if return_max != return_min:
-            return_scores = ((avg_series - return_min) / (return_max - return_min)) * 100
+        # Filter valid data
+        valid = prob_series.notna() & avg_series.notna() & momentum_series.notna()
+        prob_series = prob_series[valid].fillna(0)
+        avg_series = avg_series[valid].fillna(0)
+        momentum_series = momentum_series[valid].fillna(0)
+
+        if len(prob_series) == 0:
+            return None, None
+
+        # Normalize all components to 0-100 scale
+        def normalize(series):
+            min_val, max_val = series.min(), series.max()
+            if max_val != min_val:
+                return ((series - min_val) / (max_val - min_val)) * 100
+            return pd.Series(50, index=series.index)
+
+        return_scores = normalize(avg_series)
+        momentum_scores = normalize(momentum_series)
+
+        # Calculate composite score (includes momentum!)
+        composite = (weight_prob * prob_series + 
+                    weight_return * return_scores + 
+                    weight_momentum * momentum_scores)
+
+        # Get top candidates (extra for filtering)
+        candidates = composite.nlargest(top_n * 2).index.tolist()
+
+        # Apply sector constraints (Quick Win #2)
+        if use_sector_limits:
+            selected = self.apply_sector_constraints(candidates[:top_n])
         else:
-            return_scores = pd.Series(50, index=avg_series.index)
+            selected = candidates[:top_n]
 
-        composite_score = (weight_prob * prob_series) + (weight_return * return_scores)
-        top_etfs = composite_score.nlargest(top_n)
+        # Calculate weights (Quick Win #4)
+        if use_risk_parity:
+            weights = self.calculate_risk_parity_weights(selected, as_of_date)
+        else:
+            weights = {etf: 1.0 / len(selected) for etf in selected}
 
-        return top_etfs.index.tolist()
+        return selected, weights
 
-    def run_backtest(self, weight_prob=0.5, weight_return=0.5, top_n=1, progress_callback=None):
+    # ========================================================================
+    # BACKTEST EXECUTION
+    # ========================================================================
+
+    def run_backtest(self, weight_prob=0.3, weight_return=0.3, weight_momentum=0.4,
+                    top_n=5, use_sector_limits=True, use_risk_parity=True,
+                    min_observations=5, progress_callback=None):
+        """
+        Run enhanced backtest with all Quick Win improvements.
+
+        Returns:
+            DataFrame: Results with columns:
+                - Date, Month, Year
+                - Holdings (with weights shown)
+                - Returns_%, Portfolio_Value
+                - Benchmark_Returns_%, Benchmark_Value
+        """
         current_date = self.start_date
         portfolio_value = 100000
         benchmark_value = 100000
         results = []
+
         months_processed = 0
-        total_months = (self.end_date.year - self.start_date.year) * 12 + (self.end_date.month - self.start_date.month) + 1
+        total_months = ((self.end_date.year - self.start_date.year) * 12 + 
+                       (self.end_date.month - self.start_date.month))
 
         while current_date <= self.end_date:
             month_name = current_date.strftime("%B")
             decision_date = current_date - relativedelta(months=1)
 
-            recommended_etfs = self.get_recommendation(month_name, decision_date, weight_prob, weight_return, top_n)
+            # Get recommendations with all enhancements
+            recommended_etfs, weights = self.get_recommendation(
+                month_name, decision_date, weight_prob, weight_return,
+                weight_momentum, top_n, use_sector_limits, use_risk_parity, 
+                min_observations
+            )
 
             if recommended_etfs is None or len(recommended_etfs) == 0:
                 current_date += relativedelta(months=1)
                 continue
 
-            # Calculate strategy returns
+            # Calculate strategy returns with risk parity weights
             month_returns = {}
             for ticker in recommended_etfs:
                 if ticker in self.data:
                     ticker_data = self.data[ticker]
-                    month_data = ticker_data[(ticker_data.index.year == current_date.year) & 
-                                            (ticker_data.index.month == current_date.month)]
+                    month_data = ticker_data[
+                        (ticker_data.index.year == current_date.year) & 
+                        (ticker_data.index.month == current_date.month)
+                    ]
 
                     if not month_data.empty and 'pct_change' in month_data.columns:
                         ret = month_data['pct_change'].iloc[0]
                         if not pd.isna(ret):
                             month_returns[ticker] = ret
 
-            if month_returns:
-                portfolio_return = np.mean(list(month_returns.values()))
+            # Weighted portfolio return
+            if month_returns and weights:
+                portfolio_return = sum(
+                    month_returns.get(etf, 0) * weights.get(etf, 0) 
+                    for etf in recommended_etfs
+                )
                 portfolio_value *= (1 + portfolio_return / 100)
             else:
                 portfolio_return = 0
 
-            # Calculate benchmark returns
+            # Benchmark returns
             benchmark_return = 0
             if self.benchmark_data is not None:
-                bench_month = self.benchmark_data[(self.benchmark_data.index.year == current_date.year) & 
-                                                 (self.benchmark_data.index.month == current_date.month)]
+                bench_month = self.benchmark_data[
+                    (self.benchmark_data.index.year == current_date.year) & 
+                    (self.benchmark_data.index.month == current_date.month)
+                ]
                 if not bench_month.empty and 'pct_change' in bench_month.columns:
                     bench_ret = bench_month['pct_change'].iloc[0]
                     if not pd.isna(bench_ret):
                         benchmark_return = bench_ret
                         benchmark_value *= (1 + benchmark_return / 100)
 
+            # Format holdings with weights
+            holdings_str = ', '.join([
+                f"{etf}({weights.get(etf, 0)*100:.1f}%)" 
+                for etf in recommended_etfs
+            ])
+
             results.append({
                 'Date': current_date,
                 'Month': month_name,
                 'Year': current_date.year,
-                'Holdings': ', '.join(recommended_etfs),
+                'Holdings': holdings_str,
                 'Returns_%': portfolio_return,
                 'Portfolio_Value': portfolio_value,
                 'Benchmark_Returns_%': benchmark_return,
@@ -185,7 +463,12 @@ class ETFBacktester:
         self.results = pd.DataFrame(results)
         return self.results
 
+    # ========================================================================
+    # METRICS CALCULATION
+    # ========================================================================
+
     def calculate_metrics(self):
+        """Calculate comprehensive performance metrics for strategy and benchmark"""
         if self.results.empty:
             return None, None
 
@@ -202,7 +485,7 @@ class ETFBacktester:
         def sharpe_ratio(rets):
             if len(rets) == 0 or rets.std() == 0:
                 return 0
-            excess_return = rets.mean() - (0.05 / 12)
+            excess_return = rets.mean() - (0.05 / 12)  # 5% risk-free rate
             return (excess_return / rets.std()) * np.sqrt(12)
 
         def max_drawdown(values):
@@ -247,6 +530,7 @@ class ETFBacktester:
         }
 
         return strategy_metrics, benchmark_metrics
+
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -606,6 +890,13 @@ with tab2:
         bt_weight_return = 1.0 - bt_weight_prob
         st.caption(f"Return Weight: {bt_weight_return:.1f}")
 
+        st.subheader("Enhanced Strategy Controls")
+        bt_weight_momentum = st.slider("Momentum Weight", 0.0, 1.0, 0.4, 0.1)
+        bt_min_obs = st.slider("Min Observations", 1, 10, 5)
+        bt_max_sector = st.slider("Max Sector %", 20, 60, 40, 5) / 100
+        bt_use_risk_parity = st.checkbox("Risk Parity Weighting", value=True)
+        bt_use_sector_limits = st.checkbox("Sector Limits", value=True)
+
         run_backtest = st.button("🚀 Run Backtest", type="primary")
 
     with col2:
@@ -630,7 +921,7 @@ with tab2:
             st.error("Please select at least one asset class")
         else:
             with st.spinner("Running backtest..."):
-                backtester = ETFBacktester(
+                backtester = EnhancedETFBacktester(
                     tickers=bt_tickers,
                     start_date=bt_start,
                     end_date=bt_end,
@@ -652,11 +943,15 @@ with tab2:
 
                 status_text.text("Running backtest simulation...")
                 results = backtester.run_backtest(
-                    weight_prob=bt_weight_prob,
-                    weight_return=bt_weight_return,
-                    top_n=bt_top_n,
-                    progress_callback=lambda p: progress_bar.progress(0.6 + p * 0.4)
-                )
+                   weight_prob=bt_weight_prob,
+                   weight_return=bt_weight_return,
+                   weight_momentum=bt_weight_momentum,  # NEW
+                   top_n=bt_top_n,
+                   use_sector_limits=bt_use_sector_limits,  # NEW
+                   use_risk_parity=bt_use_risk_parity,  # NEW
+                   min_observations=bt_min_obs,  # NEW
+                   progress_callback=lambda p: progress_bar.progress(0.6 + p * 0.4)
+               )
 
                 progress_bar.empty()
                 status_text.empty()
