@@ -6,3 +6,6 @@ plotly
 ta
 matplotlib
 python-dateutil
+scikit-learn
+statsmodels
+prophet
